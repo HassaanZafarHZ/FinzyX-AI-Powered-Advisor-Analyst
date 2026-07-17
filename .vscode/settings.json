@@ -1,0 +1,11 @@
+{
+  "python.defaultInterpreterPath": "/home/abdullah/Desktop/finzyX/backend/venv/bin/python3",
+  "python.interpreterPath": "/home/abdullah/Desktop/finzyX/backend/venv/bin/python3",
+  "python.analysis.extraPaths": [
+    "/home/abdullah/Desktop/finzyX",
+    "/home/abdullah/Desktop/finzyX/backend",
+    "/home/abdullah/Desktop/finzyX/backend/venv/lib/python3.12/site-packages"
+  ],
+  "python.analysis.typeCheckingMode": "basic",
+  "python.terminal.useEnvFile": true
+}
