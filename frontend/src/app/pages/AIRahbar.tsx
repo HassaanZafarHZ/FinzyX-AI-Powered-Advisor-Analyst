@@ -4,11 +4,11 @@ import { AppLayout } from "../components/AppLayout";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/Card";
 import { Input } from "../components/Input";
 import { Button } from "../components/Button";
-import { Send, Bot, User as UserIcon, Sparkles, Star, Info, ChevronRight } from "lucide-react";
+import { Send, Bot, User as UserIcon, Sparkles, Star, Info, ChevronRight, AlertTriangle, FileText } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { useApp } from "../../contexts/AppContext";
 import { psxStocks, nlpSearch, PSXStock } from "../../data/psxStocks";
-import { fetchChatLogs, saveChatLog } from "../../services/psxApi";
+import { fetchChatLogs, fetchLivePrices, saveChatLog, sendChatMessage, sendRahbarQuery } from "../../services/psxApi";
 
 
 interface Message {
@@ -16,11 +16,19 @@ interface Message {
   role: "user" | "assistant";
   content: string;
   stocks?: Array<{ symbol: string; name: string; price: number; change: number; divYield: number }>;
+  sources?: Array<{ symbol: string; title: string }>;
+  tickerValidation?: { valid: boolean; unverified_tickers: string[] };
+  grounded?: boolean;
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
 // AI Response Engine
 // ──────────────────────────────────────────────────────────────────────────────
+
+const getStocksForQuery = (text: string) => {
+  const words = text.toUpperCase().split(/[\s,.-]+/);
+  return psxStocks.filter(s => words.includes(s.symbol)).slice(0, 5);
+};
 
 const romanUrduPatterns = [
   /\b(mujhe|mujy|mujhey|mujhay)\b/i,
@@ -36,6 +44,19 @@ const romanUrduPatterns = [
 
 const isRomanUrduQuery = (text: string): boolean => {
   return romanUrduPatterns.some((p) => p.test(text));
+};
+
+const isSimpleGreeting = (text: string): boolean => {
+  return /^(hi|hello|hey|salam|assalam[- ]o[- ]alaikum|aoa|good morning|good afternoon|good evening)[!.?, ]*$/i.test(text.trim());
+};
+
+const isLivePriceQuery = (text: string): boolean => {
+  return /\b(price|prices|qeemat|rate|rates|quote|current|live)\b/i.test(text) &&
+    /\b(stock|stocks|share|shares|psx|market|mcb|hbl|ubl|ogdc|ppl|ffc|engro|lucky|luck)\b/i.test(text);
+};
+
+const isOldNoContextResponse = (text: string): boolean => {
+  return /no context documents|no context documents loaded|do not have any context documents|provided context documents do not contain|no financial data or context|knowledge base.*context documents|currently do not contain any stock price/i.test(text);
 };
 
 // E6-US1-TC2: Detect mixed language queries
@@ -299,25 +320,7 @@ const generateResponse = (
   };
 };
 
-const getStocksForQuery = (queryText: string): Message["stocks"] => {
-  const intent = detectIntent(queryText);
-  if (intent.type === "specific_stock" && intent.data) {
-    return [intent.data as PSXStock];
-  }
-  if (intent.type === "sector" && typeof intent.data === "string") {
-    return psxStocks.filter((s) => s.sector === intent.data).slice(0, 5);
-  }
-  if (intent.type === "dividend") {
-    return [...psxStocks].sort((a, b) => b.divYield - a.divYield).slice(0, 5);
-  }
-  if (intent.type === "shariah") {
-    return psxStocks.filter((s) => s.shariah).slice(0, 6);
-  }
-  if (intent.type === "low_risk") {
-    return psxStocks.filter((s) => s.riskLevel === "low").slice(0, 5);
-  }
-  return undefined;
-};
+
 
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -391,6 +394,7 @@ export const AIRahbar = () => {
         if (logs && logs.length > 0) {
           const historicalMessages: Message[] = [getInitialMsg()];
           logs.forEach((entry, index) => {
+            if (isOldNoContextResponse(entry.response)) return;
             historicalMessages.push({
               id: index * 2 + 2,
               role: "user",
@@ -452,27 +456,75 @@ export const AIRahbar = () => {
     setInput("");
     setIsTyping(true);
 
-    // Simulate AI thinking
-    setTimeout(async () => {
-      const response = generateResponse(msg, language, investorProfile);
-      setMessages((prev) => {
-        const assistantMessage: Message = {
-          id: prev.length + 1,
-          role: "assistant",
-          content: response.content,
-          stocks: response.stocks,
-        };
-        return [...prev, assistantMessage];
-      });
-      setIsTyping(false);
+    // Prepare history for API
+    const historyForApi = messages.map(m => ({
+      role: m.role,
+      content: m.content
+    })).concat([{ role: 'user', content: msg }]);
 
-      // Save to database
+    // API Call
+    setTimeout(async () => {
       try {
-        await saveChatLog(msg, response.content, language);
-      } catch (err) {
-        console.error("Failed to save chat log to database:", err);
+        // If user explicitly selected Roman Urdu in app settings, force that.
+        // Otherwise let the backend auto-detect from the query text.
+        const apiLang = language === "roman-urdu" ? "roman_urdu" : "auto";
+        const response = isSimpleGreeting(msg) || isLivePriceQuery(msg)
+          ? null
+          : await sendRahbarQuery(msg, apiLang);
+        let replyContent = isSimpleGreeting(msg)
+          ? (language === "roman-urdu"
+            ? "Wa Alaikum Assalam! Main AI Rahbar hoon. PSX stocks, dividends, halal stocks ya kisi company ke baray mein sawal pooch sakte hain."
+            : "Wa Alaikum Assalam! I am AI Rahbar. Ask me about PSX stocks, dividends, Shariah-compliant stocks, or any company.")
+          : response?.answer || "I'm sorry, I'm having trouble connecting to my servers right now. Please try again later.";
+
+        if (isLivePriceQuery(msg)) {
+          const requestedSymbols = psxStocks
+            .filter((stock) => new RegExp(`\\b${stock.symbol}\\b`, "i").test(msg))
+            .map((stock) => stock.symbol);
+          const symbols = requestedSymbols.length > 0 ? requestedSymbols : ["MCB", "HBL", "OGDC", "FFC", "LUCK"];
+          const livePrices = await fetchLivePrices(symbols);
+          if (livePrices.length > 0) {
+            replyContent = (language === "roman-urdu" ? "📈 **Live PSX Qeematein**\n\n" : "📈 **Live PSX Prices**\n\n") +
+              livePrices.map((price) => `${price.symbol}: PKR ${price.current_price.toLocaleString()} (${price.change_percent == null ? "N/A" : `${price.change_percent >= 0 ? "+" : ""}${price.change_percent}%`})`).join("\n");
+          } else {
+            replyContent = language === "roman-urdu"
+              ? "PSX live prices is waqt available nahi hain. Stock Screener se dobara check karein."
+              : "PSX live prices are temporarily unavailable. Please check the Stock Screener again.";
+          }
+        } else if (response && response.grounded === false) {
+          const localFallback = generateResponse(msg, language, investorProfile);
+          replyContent = localFallback.content;
+        }
+
+        setMessages((prev) => {
+          const assistantMessage: Message = {
+            id: prev.length + 1,
+            role: "assistant",
+            content: replyContent,
+            stocks: getStocksForQuery(replyContent), // Try to extract stocks from response
+            sources: response?.sources,
+            tickerValidation: response?.ticker_validation,
+            grounded: response?.grounded
+          };
+          return [...prev, assistantMessage];
+        });
+
+        // Save to database
+        try {
+          await saveChatLog(msg, replyContent, apiLang);
+        } catch (err) {
+          console.error("Failed to save chat log to database:", err);
+        }
+      } catch (error) {
+        console.error("API Error:", error);
+        setMessages((prev) => [
+          ...prev,
+          { id: prev.length + 1, role: "assistant", content: "Sorry, I encountered an error. Please ensure the GEMINI_API_KEY is configured in the backend." }
+        ]);
+      } finally {
+        setIsTyping(false);
       }
-    }, 800 + Math.random() * 600);
+    }, 100);
   };
 
 
@@ -562,6 +614,35 @@ export const AIRahbar = () => {
                               </button>
                             ))}
                           </div>
+                        </div>
+                      )}
+
+                      {/* Sources (Grounding Proof) */}
+                      {message.grounded !== false && message.sources && message.sources.length > 0 && (
+                        <div className="mt-3 pt-3 border-t border-border/30 space-y-2">
+                          <div className="flex items-center gap-1.5 text-xs text-muted-foreground font-medium">
+                            <FileText className="w-3.5 h-3.5" />
+                            {language === "roman-urdu" ? "Zaraye (Sources):" : "Sources:"}
+                          </div>
+                          <ul className="space-y-1">
+                            {message.sources.map((src, idx) => (
+                              <li key={idx} className="text-xs text-muted-foreground flex items-start gap-1">
+                                <span className="text-primary font-medium shrink-0">{src.symbol}</span>
+                                <span className="truncate" title={src.title}>— {src.title}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+
+                      {/* Ticker Validation Warning */}
+                      {message.tickerValidation && !message.tickerValidation.valid && (
+                        <div className="mt-2 flex items-center gap-2 p-2 bg-amber-500/10 text-amber-600 rounded-lg text-xs">
+                          <AlertTriangle className="w-4 h-4 shrink-0" />
+                          <p>
+                            <strong>Unverified tickers mentioned:</strong>{" "}
+                            {message.tickerValidation.unverified_tickers.join(", ")}
+                          </p>
                         </div>
                       )}
                     </div>

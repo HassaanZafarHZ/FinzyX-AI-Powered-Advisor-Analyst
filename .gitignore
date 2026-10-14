@@ -1,0 +1,22 @@
+.env
+*.env
+*.log
+out.txt
+response*.json
+node_modules/
+__pycache__/
+venv/
+venv_windows/
+.venv/
+test_gemini_api.py
+check_*.py
+# Build output
+frontend/dist/
+
+# Local root dependencies, if not intentionally used
+/node_modules/
+
+# Temporary test files
+test_frontend.js
+backend/app/test_gemini_15.py
+check_*.py
