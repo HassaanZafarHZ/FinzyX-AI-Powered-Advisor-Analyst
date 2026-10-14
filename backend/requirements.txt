@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+psycopg2-binary
+email-validator
+python-jose[cryptography]
+bcrypt
+google-genai
+requests
+python-dotenv
