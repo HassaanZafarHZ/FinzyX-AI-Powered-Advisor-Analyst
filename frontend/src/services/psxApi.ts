@@ -95,6 +95,8 @@ export interface UserResponse {
   name: string;
   email: string;
   dummy_balance: number;
+  phone?: string;
+  photo_url?: string;
 }
 
 export interface AuthResponse {
@@ -318,6 +320,26 @@ export async function fetchProfile(): Promise<InvestorProfileData | null> {
   return apiFetch<InvestorProfileData>('/api/auth/profile');
 }
 
+export async function updateUserApi(updates: { name?: string; phone?: string }): Promise<UserResponse | null> {
+  const headers = new Headers();
+  headers.set('Content-Type', 'application/json');
+  return apiFetch<UserResponse>('/api/auth/user', {
+    method: 'PUT',
+    headers,
+    body: JSON.stringify(updates)
+  });
+}
+
+export async function uploadPhotoApi(photoBase64: string): Promise<{ photo_url: string } | null> {
+  const headers = new Headers();
+  headers.set('Content-Type', 'application/json');
+  return apiFetch<{ photo_url: string }>('/api/auth/upload-photo', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ photo: photoBase64 })
+  });
+}
+
 export async function updateProfile(age: string, income: string, risk_appetite: string): Promise<boolean> {
   const headers = new Headers();
   headers.set('Content-Type', 'application/json');
@@ -384,3 +406,170 @@ export async function saveChatLog(query: string, response: string, language: str
   });
   return res !== null;
 }
+
+export interface ChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+export async function sendChatMessage(messages: ChatMessage[], investor_profile?: any): Promise<{ response: string } | null> {
+  const headers = new Headers();
+  headers.set('Content-Type', 'application/json');
+  
+  return apiFetch<{ response: string }>('/api/chat', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ messages, investor_profile })
+  });
+}
+
+export interface RahbarChatResponse {
+  answer: string;
+  sources: Array<{ symbol: string; title: string }>;
+  ticker_validation: {
+    valid: boolean;
+    unverified_tickers: string[];
+  };
+  grounded: boolean;
+}
+
+export async function sendRahbarQuery(query: string, language: string): Promise<RahbarChatResponse | null> {
+  const headers = new Headers();
+  headers.set('Content-Type', 'application/json');
+  
+  return apiFetch<RahbarChatResponse>('/api/rahbar/chat', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ query, language })
+  });
+}
+
+// ── Roadmap Endpoints ─────────────────────────────────────────────────────────
+
+export interface RoadmapStockPick {
+  symbol: string;
+  name: string;
+  sector: string;
+  div_yield: number;
+}
+
+export interface RoadmapExplanation {
+  symbol: string;
+  sector: string;
+  has_detail: boolean;
+  explanation: string;
+  sources: Array<{ symbol: string; title: string }>;
+}
+
+export interface RoadmapResponse {
+  allocation: {
+    equity_pct: number;
+    dividend_pct: number;
+    fixed_income_pct: number;
+    reasoning: string;
+  };
+  equity_picks: RoadmapStockPick[];
+  dividend_picks: RoadmapStockPick[];
+  fixed_income_note: string;
+  explanation: RoadmapExplanation[];
+  sources: Array<{ symbol: string; title: string }>;
+  grounded: number;
+}
+
+export interface RoadmapResult {
+  data: RoadmapResponse | null;
+  error: string | null;
+  status: number | null;
+}
+
+/**
+ * Fetch the AI-generated investment roadmap.
+ * Uses a 45s timeout to accommodate the ~22s backend LLM generation time.
+ * Returns structured result with error info (unlike apiFetch which swallows errors).
+ */
+export async function fetchRoadmap(shariahOnly: boolean, language: string): Promise<RoadmapResult> {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 45000);
+
+    const token = getAuthToken();
+    const headers = new Headers();
+    headers.set('Content-Type', 'application/json');
+    if (token) {
+      headers.set('Authorization', `Bearer ${token}`);
+    }
+
+    const res = await fetch(`${API_BASE}/api/rahbar/roadmap`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ shariah_only: shariahOnly, language }),
+      signal: controller.signal
+    });
+
+    clearTimeout(timer);
+
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({ detail: 'Unknown error' }));
+      return { data: null, error: body.detail || 'Request failed', status: res.status };
+    }
+
+    const data = (await res.json()) as RoadmapResponse;
+    return { data, error: null, status: res.status };
+  } catch (err: any) {
+    if (err.name === 'AbortError') {
+      return { data: null, error: 'Request timed out — the AI analysis is taking longer than expected. Please try again.', status: null };
+    }
+    return { data: null, error: 'Network error or backend offline', status: null };
+  }
+}
+
+// ── Smart Stock Screener (NLP-driven) ─────────────────────────────────────────
+
+export interface ScreenerStock {
+  symbol: string;
+  name: string;
+  sector: string;
+  shariah: boolean;
+  div_yield: number;
+}
+
+export interface ScreenerFilters {
+  sector: string | null;
+  shariah_only: boolean | null;
+  sort_by: string | null;
+  sort_direction: string | null;
+  min_dividend_yield: number | null;
+}
+
+export interface ScreenerResponse {
+  results: ScreenerStock[];
+  total: number;
+  filters_applied: ScreenerFilters;
+  language: string;
+  ai_insight: string;
+  suggested_queries: string[];
+}
+
+/**
+ * Search stocks using natural language via the NLP-driven screener endpoint.
+ * No auth required — screener is a public discovery tool.
+ * Uses a 20s timeout to accommodate the Gemini NLP parsing call.
+ */
+export async function searchScreener(query: string): Promise<ScreenerResponse | null> {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 20000);
+
+    const res = await fetch(
+      `${API_BASE}/api/screener/search?q=${encodeURIComponent(query)}`,
+      { signal: controller.signal }
+    );
+
+    clearTimeout(timer);
+    if (!res.ok) return null;
+    return (await res.json()) as ScreenerResponse;
+  } catch {
+    return null;
+  }
+}
+
