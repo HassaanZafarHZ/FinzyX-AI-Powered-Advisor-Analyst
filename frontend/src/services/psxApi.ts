@@ -6,7 +6,7 @@
  * watchlists, user profiles, and chat logs.
  */
 
-const API_BASE = 'http://localhost:3001';
+const API_BASE = 'https://finzyx-ai-powered-advisor-analyst.onrender.com';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
